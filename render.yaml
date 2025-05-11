@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: dine-and-bingo          # Matches Render service name (use lowercase, no spaces)
+    name: web_bingo          # Matches Render service name (use lowercase, no spaces)
     env: python
     runtime: python3.9           # Compatible with geopandas, osmnx
     plan: free                   # Or starter/paid if needed
