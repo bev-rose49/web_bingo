@@ -7,7 +7,7 @@ import networkx as nx
 import os
 
 app = Flask(__name__)
-app.secret_key = 'super-secret-key'  # Set this to something secure in production
+app.secret_key = os.environ.get('SECRET_KEY', 'fallback-secret-key')
 
 # Load the road network graph once at startup
 print("Loading OSM street graph...")
