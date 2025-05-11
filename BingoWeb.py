@@ -9,10 +9,15 @@ import os
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'fallback-secret-key')
 
-# Load the road network graph once at startup
+# Load the road network graph
 print("Loading OSM street graph...")
-G = ox.graph_from_place("Windhoek, Namibia", network_type="drive")  # use 'drive' network for cars
-print("Graph loaded.")
+if not os.path.exists("windhoek.graphml"):
+    G = ox.graph_from_place("Windhoek, Namibia", network_type="drive")
+    ox.save_graphml(G, "windhoek.graphml")
+    print("Graph saved.")
+else:
+    G = ox.load_graphml("windhoek.graphml")
+    print("Cached graph loaded.")
 
 # Load restaurant CSV with fallback encoding
 df_raw = pd.read_csv("restaurants.csv", encoding='latin1')
