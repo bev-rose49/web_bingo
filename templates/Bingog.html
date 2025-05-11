@@ -24,6 +24,20 @@
     select, button, input { padding: 10px; font-size: 16px; margin: 5px; border-radius: 8px; border: none; }
     #distance-label { margin: 10px auto; font-size: 16px; }
     #gps-modal-content input { width: 80%; box-sizing: border-box; }
+    .loading::after {
+      content: '';
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 2px solid #333;
+      border-radius: 50%;
+      border-top-color: #4CAF50;
+      animation: spin 1s linear infinite;
+      margin-left: 10px;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
   </style>
 </head>
 <body>
@@ -33,7 +47,7 @@
     <a href="/friends">Friends</a>
   </nav>
 
-  <h1>D I N E    & &nbsp;<span style="display:inline-block; background:#ff4d4d; color:white; border-radius:50%; width:40px; height:40px; line-height:40px; font-size:20px;">B</span> <span style="display:inline-block; background:#ff4d4d; color:white; border-radius:50%; width:40px; height:40px; line-height:40px; font-size:20px;">I</span> <span style="display:inline-block; background:#ff4d4d; color:white; border-radius:50%; width:40px; height:40px; line-height:40px; font-size:20px;">N</span> <span style="display:inline-block; background:#ff4d4d; color:white; border-radius:50%; width:40px; height:40px; line-height:40px; font-size:20px;">G</span> <span style="display:inline-block; background:#ff4d4d; color:white; border-radius:50%; width:40px; height:40px; line-height:40px; font-size:20px;">O</span></h1>
+  <h1>D I N E    &  <span style="display:inline-block; background:#ff4d4d; color:white; border-radius:50%; width:40px; height:40px; line-height:40px; font-size:20px;">B</span> <span style="display:inline-block; background:#ff4d4d; color:white; border-radius:50%; width:40px; height:40px; line-height:40px; font-size:20px;">I</span> <span style="display:inline-block; background:#ff4d4d; color:white; border-radius:50%; width:40px; height:40px; line-height:40px; font-size:20px;">N</span> <span style="display:inline-block; background:#ff4d4d; color:white; border-radius:50%; width:40px; height:40px; line-height:40px; font-size:20px;">G</span> <span style="display:inline-block; background:#ff4d4d; color:white; border-radius:50%; width:40px; height:40px; line-height:40px; font-size:20px;">O</span></h1>
   <div id="game-controls">
     <label for="themeSelect">Select Theme:</label>
     <select id="themeSelect"><option value="">Loading themes...</option></select>
@@ -267,7 +281,7 @@
     function handleCellClick(cell, rest) {
       activeCell = cell;
       activeRest = rest;
-      document.getElementById("modal-text").textContent = `Choose an action for \"${rest.Name}\"`;
+      document.getElementById("modal-text").textContent = `Choose an action for "${rest.Name}"`;
       document.getElementById("modal").style.display = "flex";
     }
 
@@ -282,23 +296,72 @@
         document.getElementById("modal").style.display = "none";
         return;
       }
+
+      // Create file input
       const input = document.createElement('input');
       input.type = 'file';
       input.accept = 'image/*';
-      input.onchange = e => {
+      input.onchange = (e) => {
+        const file = e.target.files[0];
+        if (!file) {
+          alert('No image selected. Please choose an image.');
+          return;
+        }
+        if (file.size > 5 * 1024 * 1024) { // 5MB limit
+          alert('Image is too large. Please select an image under 5MB.');
+          return;
+        }
+
+        // Provide feedback to the user
+        document.getElementById("modal-text").textContent = "Processing image...";
+        document.getElementById("modal-text").classList.add("loading");
+
         const reader = new FileReader();
-        reader.onload = ev => {
-          const img = document.createElement('img');
-          img.src = ev.target.result;
-          activeCell.innerHTML = `<div>${activeRest.Name}</div>`;
-          activeCell.appendChild(img);
-          activeCell.classList.add("checked");
-          updateScore();
-          document.getElementById("modal").style.display = "none";
+        reader.onload = (ev) => {
+          try {
+            const img = document.createElement('img');
+            img.src = ev.target.result;
+            img.style.maxWidth = '60px';
+            img.style.maxHeight = '60px';
+            img.style.marginTop = '5px';
+
+            // Update cell content
+            activeCell.innerHTML = `<div>${activeRest.Name}</div>`;
+            activeCell.appendChild(img);
+            activeCell.classList.add("checked");
+
+            // Update score and close modal
+            updateScore();
+            document.getElementById("modal").style.display = "none";
+          } catch (error) {
+            console.error('Error updating cell:', error);
+            alert('Failed to process image. Please try again.');
+            document.getElementById("modal-text").textContent = `Choose an action for "${activeRest.Name}"`;
+          } finally {
+            document.getElementById("modal-text").classList.remove("loading");
+          }
         };
-        reader.readAsDataURL(e.target.files[0]);
+        reader.onerror = () => {
+          console.error('FileReader error');
+          alert('Error reading image file. Please try again.');
+          document.getElementById("modal-text").textContent = `Choose an action for "${activeRest.Name}"`;
+          document.getElementById("modal-text").classList.remove("loading");
+        };
+        reader.readAsDataURL(file);
       };
-      input.click();
+      input.onerror = () => {
+        console.error('File input error');
+        alert('Error accessing file input. Please try again.');
+        document.getElementById("modal-text").classList.remove("loading");
+      };
+
+      // Trigger file picker
+      try {
+        input.click();
+      } catch (error) {
+        console.error('Error triggering file input:', error);
+        alert('Unable to open file picker. Please try again.');
+      }
     };
 
     document.getElementById("directionsBtn").onclick = async () => {
@@ -353,7 +416,7 @@
                 const errorText = await newRes.text();
                 throw new Error(`HTTP error! Status: ${newRes.status}, Message: ${errorText}`);
               }
-              const newPath = await newRes.json();
+              const newPath = await res.json();
               if (!Array.isArray(newPath) || newPath.length === 0) {
                 throw new Error('Invalid recalculated route data received');
               }
