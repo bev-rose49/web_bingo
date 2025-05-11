@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DINE & BINGO</title>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka+One&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    body { font-family: 'Fredoka One', cursive; background: #fef9f5; color: #333; text-align: center; }
+    nav { display: flex; justify-content: center; gap: 30px; background: #ff4d4d; padding: 10px; }
+    nav a { color: white; text-decoration: none; font-size: 18px; }
+    nav a:hover { text-decoration: underline; }
+    #map { height: 400px; margin: 20px auto; width: 80%; }
+    #bingo-container { display: flex; justify-content: center; margin: 20px auto; }
+    .bingo-board { display: grid; gap: 10px; }
+    .cell { width: 80px; height: 80px; display: flex; justify-content: center; align-items: center; flex-direction: column; font-size: 14px; text-align: center; background-color: #fff8dc; border: 2px solid #f1c40f; cursor: pointer; }
+    .cell.checked { background-color: #90ee90; font-weight: bold; }
+    .cell img { max-width: 60px; max-height: 60px; margin-top: 5px; }
+    #modal, #gps-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); display: none; justify-content: center; align-items: center; z-index: 9999; }
+    #modal-content, #gps-modal-content { background: white; padding: 20px; border-radius: 8px; text-align: center; }
+    #modal-content button, #gps-modal-content button { background-color: #4CAF50; color: white; border: none; padding: 10px 20px; margin: 10px; border-radius: 8px; cursor: pointer; }
+    #game-controls { margin-top: 20px; }
+    select, button, input { padding: 10px; font-size: 16px; margin: 5px; border-radius: 8px; border: none; }
+    #distance-label { margin: 10px auto; font-size: 16px; }
+    #gps-modal-content input { width: 80%; box-sizing: border-box; }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="/game">Home</a>
+    <a href="/leaderboard">Leaderboard</a>
+    <a href="/friends">Friends</a>
+  </nav>
+
+  <h1>D I N E    & &nbsp;<span style="display:inline-block; background:#ff4d4d; color:white; border-radius:50%; width:40px; height:40px; line-height:40px; font-size:20px;">B</span> <span style="display:inline-block; background:#ff4d4d; color:white; border-radius:50%; width:40px; height:40px; line-height:40px; font-size:20px;">I</span> <span style="display:inline-block; background:#ff4d4d; color:white; border-radius:50%; width:40px; height:40px; line-height:40px; font-size:20px;">N</span> <span style="display:inline-block; background:#ff4d4d; color:white; border-radius:50%; width:40px; height:40px; line-height:40px; font-size:20px;">G</span> <span style="display:inline-block; background:#ff4d4d; color:white; border-radius:50%; width:40px; height:40px; line-height:40px; font-size:20px;">O</span></h1>
+  <div id="game-controls">
+    <label for="themeSelect">Select Theme:</label>
+    <select id="themeSelect"><option value="">Loading themes...</option></select>
+    <label for="cardSize">Card Size:</label>
+    <select id="cardSize">
+      <option value="2">2x2</option>
+      <option value="3">3x3</option>
+      <option value="4">4x4</option>
+    </select>
+    <button onclick="generateBoard()">🎲 Start Game</button>
+    <button onclick="openGpsModal()">📍 Set Location</button>
+    <div id="distance-label"></div>
+  </div>
+
+  <p id="score">Visited: 0</p>
+  <div id="bingo-container"></div>
+  <div id="map"></div>
+
+  <div id="modal">
+    <div id="modal-content">
+      <p id="modal-text"></p>
+      <button id="verifyBtn">Verify I’m Here</button>
+      <button id="directionsBtn">Get Directions</button>
+    </div>
+  </div>
+
+  <div id="gps-modal">
+    <div id="gps-modal-content">
+      <p>Enter your location coordinates:</p>
+      <input type="number" id="latitude" placeholder="Latitude (e.g., -22.56)" step="any" />
+      <input type="number" id="longitude" placeholder="Longitude (e.g., 17.08)" step="any" />
+      <button onclick="setManualLocation()">Set Location</button>
+      <button onclick="closeGpsModal()">Cancel</button>
+    </div>
+  </div>
+
+  <canvas id="confettiCanvas"></canvas>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+  <script>
+    const ICONS = {
+      'localnamibiancuisine': 'namibia.png',
+      'internationalflavors': 'international.png',
+      'cafeculture': 'cafe.png',
+      'finedining': 'dining.png',
+      'pizza': 'pizza.png',
+      'default': 'restaurant.png'
+    };
+
+    const FALLBACK_THEMES = [
+      'Local Namibian Cuisine',
+      'International Flavors',
+      'Cafe Culture',
+      'Fine Dining',
+      'Pizza'
+    ];
+
+    let map, userMarker, userLocation = null, routeLine, restMarkers = [], activeRest = null, activeCell = null;
+    let watchId = null, lastPosition = null;
+
+    async function fetchWithRetry(url, retries = 3, delay = 1000) {
+      for (let i = 0; i < retries; i++) {
+        try {
+          const res = await fetch(url);
+          if (!res.ok) {
+            const errorText = await res.text();
+            throw new Error(`HTTP error! Status: ${res.status}, Message: ${errorText}`);
+          }
+          const data = await res.json();
+          if (!Array.isArray(data)) {
+            throw new Error('Invalid response: Expected an array');
+          }
+          return data;
+        } catch (error) {
+          console.error(`Fetch attempt ${i + 1} failed for ${url}:`, error.message);
+          if (i === retries - 1) throw error;
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
+    }
+
+    window.onload = async () => {
+      map = L.map('map').setView([-22.56, 17.08], 13);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+      map.on('locationfound', e => {
+        userLocation = e.latlng;
+        if (userMarker) userMarker.setLatLng(e.latlng);
+        else userMarker = L.marker(e.latlng).addTo(map).bindPopup("You are here").openPopup();
+        map.setView(e.latlng, 13);
+      });
+
+      map.on('locationerror', e => {
+        console.error('Geolocation error:', e.message);
+        alert('Unable to access your location. Please enable GPS or set your location manually using the "Set Location" button.');
+      });
+
+      map.locate({ watch: true, setView: true, enableHighAccuracy: true });
+
+      const themeSelect = document.getElementById('themeSelect');
+      try {
+        const themes = await fetchWithRetry('/themes');
+        themeSelect.innerHTML = '';
+        if (themes.length === 0) {
+          console.warn('No themes returned from server, using fallback themes.');
+          FALLBACK_THEMES.forEach(t => {
+            const option = document.createElement('option');
+            option.value = t;
+            option.textContent = t;
+            themeSelect.appendChild(option);
+          });
+        } else {
+          themes.forEach(t => {
+            const option = document.createElement('option');
+            option.value = t;
+            option.textContent = t;
+            themeSelect.appendChild(option);
+          });
+        }
+      } catch (error) {
+        console.error('Failed to load themes after retries:', error);
+        themeSelect.innerHTML = '';
+        FALLBACK_THEMES.forEach(t => {
+          const option = document.createElement('option');
+          option.value = t;
+          option.textContent = t;
+          themeSelect.appendChild(option);
+        });
+        alert('Failed to load themes from server. Using fallback themes. Please ensure the server is running and accessible.');
+      }
+    };
+
+    function openGpsModal() {
+      document.getElementById('gps-modal').style.display = 'flex';
+    }
+
+    function closeGpsModal() {
+      document.getElementById('gps-modal').style.display = 'none';
+      document.getElementById('latitude').value = '';
+      document.getElementById('longitude').value = '';
+    }
+
+    function setManualLocation() {
+      const lat = parseFloat(document.getElementById('latitude').value);
+      const lon = parseFloat(document.getElementById('longitude').value);
+
+      if (isNaN(lat) || isNaN(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+        alert('Please enter valid coordinates (Latitude: -90 to 90, Longitude: -180 to 180).');
+        return;
+      }
+
+      userLocation = L.latLng(lat, lon);
+      if (userMarker) {
+        userMarker.setLatLng(userLocation);
+      } else {
+        userMarker = L.marker(userLocation).addTo(map).bindPopup("You are here").openPopup();
+      }
+      map.setView(userLocation, 13);
+      closeGpsModal();
+      alert('Location set successfully!');
+    }
+
+    function updateScore() {
+      const total = document.querySelectorAll('.cell').length;
+      const checked = document.querySelectorAll('.cell.checked').length;
+      document.getElementById('score').textContent = `Visited: ${checked} of ${total}`;
+      if (total > 0 && checked === total) {
+        confetti({ particleCount: 250, spread: 100, origin: { y: 0.6 } });
+        alert('🎉 BINGO! You completed the card!');
+      }
+    }
+
+    async function generateBoard() {
+      try {
+        restMarkers.forEach(m => map.removeLayer(m));
+        restMarkers = [];
+        if (watchId) stopTracking();
+
+        const theme = document.getElementById('themeSelect').value;
+        if (!theme) {
+          alert('Please select a theme before starting the game.');
+          return;
+        }
+
+        const size = parseInt(document.getElementById('cardSize').value);
+        const res = await fetch(`/restaurants?theme=${encodeURIComponent(theme)}`);
+        if (!res.ok) {
+          const errorText = await res.text();
+          throw new Error(`HTTP error! Status: ${res.status}, Message: ${errorText}`);
+        }
+        const data = await res.json();
+        if (!Array.isArray(data) || data.length === 0) {
+          alert(`No restaurants available for theme "${theme}". Please try another theme.`);
+          return;
+        }
+
+        const selectedRestaurants = data.sort(() => 0.5 - Math.random()).slice(0, size * size);
+
+        const board = document.createElement('div');
+        board.className = 'bingo-board';
+        board.style.gridTemplateColumns = `repeat(${size}, 1fr)`;
+        const container = document.getElementById('bingo-container');
+        container.innerHTML = '';
+        container.appendChild(board);
+
+        selectedRestaurants.forEach(rest => {
+          const cell = document.createElement('div');
+          cell.className = 'cell';
+          cell.textContent = rest.Name;
+          board.appendChild(cell);
+          cell.onclick = () => handleCellClick(cell, rest);
+
+          const themeKey = (rest.Theme || 'default').toLowerCase().replace(/\s+/g, '');
+          const iconName = ICONS[themeKey] || ICONS['default'];
+
+          const icon = L.icon({ iconUrl: `/static/${iconName}`, iconSize: [30, 30], iconAnchor: [15, 30] });
+          const marker = L.marker([rest.Latitude, rest.Longitude], { icon }).addTo(map)
+            .bindPopup(`<b>${rest.Name}</b><br>Lat: ${rest.Latitude}<br>Lon: ${rest.Longitude}<br><a href='${rest.Link}' target='_blank'>Visit site</a>`);
+          restMarkers.push(marker);
+        });
+
+        updateScore();
+        document.getElementById('distance-label').textContent = '';
+      } catch (error) {
+        console.error('Error generating board:', error);
+        alert('Failed to generate game board. Please check server connection or try a different theme.');
+      }
+    }
+
+    function handleCellClick(cell, rest) {
+      activeCell = cell;
+      activeRest = rest;
+      document.getElementById("modal-text").textContent = `Choose an action for \"${rest.Name}\"`;
+      document.getElementById("modal").style.display = "flex";
+    }
+
+    document.getElementById("verifyBtn").onclick = () => {
+      if (!userLocation) {
+        alert('Location not set. Please enable GPS or set your location manually.');
+        return;
+      }
+      const distance = getDistance(userLocation.lat, userLocation.lng, parseFloat(activeRest.Latitude), parseFloat(activeRest.Longitude));
+      if (distance > 100) {
+        alert("You're too far away to verify!");
+        document.getElementById("modal").style.display = "none";
+        return;
+      }
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/*';
+      input.onchange = e => {
+        const reader = new FileReader();
+        reader.onload = ev => {
+          const img = document.createElement('img');
+          img.src = ev.target.result;
+          activeCell.innerHTML = `<div>${activeRest.Name}</div>`;
+          activeCell.appendChild(img);
+          activeCell.classList.add("checked");
+          updateScore();
+          document.getElementById("modal").style.display = "none";
+        };
+        reader.readAsDataURL(e.target.files[0]);
+      };
+      input.click();
+    };
+
+    document.getElementById("directionsBtn").onclick = async () => {
+      try {
+        if (!userLocation || !activeRest) {
+          alert('Location or destination not available. Please set your location manually or enable GPS.');
+          return;
+        }
+
+        document.getElementById("modal").style.display = "none";
+        if (watchId) stopTracking();
+
+        const start = `${userLocation.lat},${userLocation.lng}`;
+        const end = `${activeRest.Latitude},${activeRest.Longitude}`;
+        const res = await fetch(`/route?start=${start}&end=${end}`);
+        if (!res.ok) {
+          const errorText = await res.text();
+          throw new Error(`HTTP error! Status: ${res.status}, Message: ${errorText}`);
+        }
+        const path = await res.json();
+        if (!Array.isArray(path) || path.length === 0) {
+          throw new Error('Invalid route data received');
+        }
+
+        if (routeLine) map.removeLayer(routeLine);
+        routeLine = L.polyline(path, { color: 'blue' }).addTo(map);
+        map.fitBounds(routeLine.getBounds());
+
+        watchId = navigator.geolocation.watchPosition(
+          async pos => {
+            const newPos = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+            userLocation = newPos;
+            if (userMarker) userMarker.setLatLng(newPos);
+            else userMarker = L.marker(newPos).addTo(map).bindPopup("You are here").openPopup();
+
+            const distance = getDistance(newPos.lat, newPos.lng, parseFloat(activeRest.Latitude), parseFloat(activeRest.Longitude));
+            document.getElementById('distance-label').textContent = `Remaining distance: ${(distance / 1000).toFixed(2)} km`;
+
+            if (distance < 25) {
+              stopTracking();
+              document.getElementById('distance-label').textContent = `Arrived at ${activeRest.Name}!`;
+              alert("You've arrived!");
+              return;
+            }
+
+            if (!lastPosition || hasMovedSignificantly(newPos, lastPosition)) {
+              lastPosition = newPos;
+              const current = `${newPos.lat},${newPos.lng}`;
+              const destination = `${activeRest.Latitude},${activeRest.Longitude}`;
+              const newRes = await fetch(`/recalculate?current=${current}&destination=${destination}`);
+              if (!newRes.ok) {
+                const errorText = await newRes.text();
+                throw new Error(`HTTP error! Status: ${newRes.status}, Message: ${errorText}`);
+              }
+              const newPath = await newRes.json();
+              if (!Array.isArray(newPath) || newPath.length === 0) {
+                throw new Error('Invalid recalculated route data received');
+              }
+              if (routeLine) map.removeLayer(routeLine);
+              routeLine = L.polyline(newPath, { color: 'red' }).addTo(map);
+              map.fitBounds(routeLine.getBounds());
+            }
+          },
+          err => {
+            console.error("Geolocation error:", err);
+            alert('GPS tracking failed. Please set your location manually to continue.');
+          },
+          { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+        );
+      } catch (error) {
+        console.error('Error in directions:', error);
+        alert('Failed to load route. Please check server connection and try again.');
+      }
+    };
+
+    function getDistance(lat1, lon1, lat2, lon2) {
+      const R = 6371e3;
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLon = (lon2 - lon1) * Math.PI / 180;
+      const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180) * Math.cos(lat2*Math.PI/180) * Math.sin(dLon/2)**2;
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      return R * c;
+    }
+
+    function hasMovedSignificantly(newPos, oldPos) {
+      const distance = getDistance(newPos.lat, newPos.lng, oldPos.lat, oldPos.lng);
+      return distance > 10; // Recalculate if moved more than 10 meters
+    }
+
+    function stopTracking() {
+      if (watchId) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
+      }
+      if (routeLine) {
+        map.removeLayer(routeLine);
+        routeLine = null;
+      }
+      lastPosition = null;
+    }
+  </script>
+</body>
+</html>
