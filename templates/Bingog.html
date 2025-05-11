@@ -130,51 +130,6 @@
       }
     }
 
-    // Resize image to reduce memory usage
-    async function resizeImage(file, maxWidth = 512, maxHeight = 512) {
-      return new Promise((resolve, reject) => {
-        const img = new Image();
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          let width = img.width;
-          let height = img.height;
-
-          // Calculate new dimensions while preserving aspect ratio
-          if (width > height) {
-            if (width > maxWidth) {
-              height = Math.round((height * maxWidth) / width);
-              width = maxWidth;
-            }
-          } else {
-            if (height > maxHeight) {
-              width = Math.round((width * maxHeight) / height);
-              height = maxHeight;
-            }
-          }
-
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext('2d');
-          ctx.drawImage(img, 0, 0, width, height);
-
-          // Convert to JPEG to reduce size
-          canvas.toBlob(
-            (blob) => {
-              if (!blob) {
-                reject(new Error('Failed to create blob'));
-                return;
-              }
-              resolve(new File([blob], file.name, { type: 'image/jpeg', lastModified: Date.now() }));
-            },
-            'image/jpeg',
-            0.8 // Quality (0 to 1)
-          );
-        };
-        img.onerror = () => reject(new Error('Failed to load image'));
-        img.src = URL.createObjectURL(file);
-      });
-    }
-
     window.onload = async () => {
       map = L.map('map').setView([-22.56, 17.08], 13);
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
@@ -332,7 +287,7 @@
 
     document.getElementById("verifyBtn").onclick = () => {
       if (!userLocation) {
-        alert({});
+        alert('Location not set. Please enable GPS or set your location manually.');
         return;
       }
       const distance = getDistance(userLocation.lat, userLocation.lng, parseFloat(activeRest.Latitude), parseFloat(activeRest.Longitude));
@@ -345,8 +300,8 @@
       // Create file input
       const input = document.createElement('input');
       input.type = 'file';
-      input.accept = 'image/jpeg,image/png';
-      input.onchange = async (e) => {
+      input.accept = 'image/*';
+      input.onchange = (e) => {
         const file = e.target.files[0];
         if (!file) {
           alert('No image selected. Please choose an image.');
@@ -356,39 +311,13 @@
           alert('Image is too large. Please select an image under 5MB.');
           return;
         }
-        if (!file.name.match(/\.(jpg|jpeg|png)$/i)) {
-          alert('Invalid image format. Please use JPG or PNG.');
-          return;
-        }
 
         // Provide feedback to the user
         document.getElementById("modal-text").textContent = "Processing image...";
         document.getElementById("modal-text").classList.add("loading");
 
-        // Resize image if large
-        let processedFile = file;
-        if (file.size > 1 * 1024 * 1024) { // Resize if >1MB
-          try {
-            processedFile = await resizeImage(file, 512, 512);
-          } catch (error) {
-            console.error('Error resizing image:', error);
-            alert('Failed to process image. Please try a smaller image.');
-            document.getElementById("modal-text").textContent = `Choose an action for "${activeRest.Name}"`;
-            document.getElementById("modal-text").classList.remove("loading");
-            return;
-          }
-        }
-
-        // Set timeout to prevent UI freeze
-        const timeout = setTimeout(() => {
-          alert('Image processing is taking too long. Please try a smaller image.');
-          document.getElementById("modal-text").textContent = `Choose an action for "${activeRest.Name}"`;
-          document.getElementById("modal-text").classList.remove("loading");
-        }, 10000); // 10 seconds
-
         const reader = new FileReader();
         reader.onload = (ev) => {
-          clearTimeout(timeout);
           try {
             const img = document.createElement('img');
             img.src = ev.target.result;
@@ -413,13 +342,12 @@
           }
         };
         reader.onerror = () => {
-          clearTimeout(timeout);
           console.error('FileReader error');
           alert('Error reading image file. Please try again.');
           document.getElementById("modal-text").textContent = `Choose an action for "${activeRest.Name}"`;
           document.getElementById("modal-text").classList.remove("loading");
         };
-        reader.readAsDataURL(processedFile);
+        reader.readAsDataURL(file);
       };
       input.onerror = () => {
         console.error('File input error');
@@ -449,4 +377,91 @@
         const start = `${userLocation.lat},${userLocation.lng}`;
         const end = `${activeRest.Latitude},${activeRest.Longitude}`;
         const res = await fetch(`/route?start=${start}&end=${end}`);
-        if (!res.ok)
+        if (!res.ok) {
+          const errorText = await res.text();
+          throw new Error(`HTTP error! Status: ${res.status}, Message: ${errorText}`);
+        }
+        const path = await res.json();
+        if (!Array.isArray(path) || path.length === 0) {
+          throw new Error('Invalid route data received');
+        }
+
+        if (routeLine) map.removeLayer(routeLine);
+        routeLine = L.polyline(path, { color: 'blue' }).addTo(map);
+        map.fitBounds(routeLine.getBounds());
+
+        watchId = navigator.geolocation.watchPosition(
+          async pos => {
+            const newPos = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+            userLocation = newPos;
+            if (userMarker) userMarker.setLatLng(newPos);
+            else userMarker = L.marker(newPos).addTo(map).bindPopup("You are here").openPopup();
+
+            const distance = getDistance(newPos.lat, newPos.lng, parseFloat(activeRest.Latitude), parseFloat(activeRest.Longitude));
+            document.getElementById('distance-label').textContent = `Remaining distance: ${(distance / 1000).toFixed(2)} km`;
+
+            if (distance < 25) {
+              stopTracking();
+              document.getElementById('distance-label').textContent = `Arrived at ${activeRest.Name}!`;
+              alert("You've arrived!");
+              return;
+            }
+
+            if (!lastPosition || hasMovedSignificantly(newPos, lastPosition)) {
+              lastPosition = newPos;
+              const current = `${newPos.lat},${newPos.lng}`;
+              const destination = `${activeRest.Latitude},${activeRest.Longitude}`;
+              const newRes = await fetch(`/recalculate?current=${current}&destination=${destination}`);
+              if (!newRes.ok) {
+                const errorText = await newRes.text();
+                throw new Error(`HTTP error! Status: ${newRes.status}, Message: ${errorText}`);
+              }
+              const newPath = await res.json();
+              if (!Array.isArray(newPath) || newPath.length === 0) {
+                throw new Error('Invalid recalculated route data received');
+              }
+              if (routeLine) map.removeLayer(routeLine);
+              routeLine = L.polyline(newPath, { color: 'red' }).addTo(map);
+              map.fitBounds(routeLine.getBounds());
+            }
+          },
+          err => {
+            console.error("Geolocation error:", err);
+            alert('GPS tracking failed. Please set your location manually to continue.');
+          },
+          { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+        );
+      } catch (error) {
+        console.error('Error in directions:', error);
+        alert('Failed to load route. Please check server connection and try again.');
+      }
+    };
+
+    function getDistance(lat1, lon1, lat2, lon2) {
+      const R = 6371e3;
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLon = (lon2 - lon1) * Math.PI / 180;
+      const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180) * Math.cos(lat2*Math.PI/180) * Math.sin(dLon/2)**2;
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      return R * c;
+    }
+
+    function hasMovedSignificantly(newPos, oldPos) {
+      const distance = getDistance(newPos.lat, newPos.lng, oldPos.lat, oldPos.lng);
+      return distance > 10; // Recalculate if moved more than 10 meters
+    }
+
+    function stopTracking() {
+      if (watchId) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
+      }
+      if (routeLine) {
+        map.removeLayer(routeLine);
+        routeLine = null;
+      }
+      lastPosition = null;
+    }
+  </script>
+</body>
+</html>
