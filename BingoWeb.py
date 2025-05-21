@@ -29,9 +29,7 @@ df = gpd.GeoDataFrame(
     crs="EPSG:4326"
 )
 
-# --------------------------
 # ROUTES
-# --------------------------
 
 # Login page
 @app.route("/", methods=["GET", "POST"])
@@ -104,9 +102,6 @@ def recalculate_route():
         print("Recalculation error:", e)
         return jsonify([]), 500
 
-# --------------------------
-# RUN APP
-# --------------------------
 
 if __name__ == "__main__":
     app.run(debug=True, host='0.0.0.0', port=5000)
